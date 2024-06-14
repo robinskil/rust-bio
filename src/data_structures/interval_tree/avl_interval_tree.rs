@@ -31,6 +31,8 @@ use std::cmp;
 use std::iter::FromIterator;
 use std::mem;
 
+use super::bounds::Bounds;
+
 /// An interval tree for storing intervals with data
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct IntervalTree<N: Ord + Clone, D> {
@@ -60,6 +62,50 @@ impl<'a, N: Ord + Clone + 'a, D: 'a> Entry<'a, N, D> {
     /// Get a reference to the interval for this entry
     pub fn interval(&self) -> &'a Interval<N> {
         self.interval
+    }
+}
+
+pub struct BoundedIntervalTreeIterator<'a, N: Ord + Clone, D, B: Bounds> {
+    nodes: Vec<&'a Node<N, D>>,
+    interval: Interval<N>,
+    _bounds: std::marker::PhantomData<B>,
+}
+
+impl<'a, N: Ord + Clone + 'a, D: 'a, B: Bounds> Iterator
+    for BoundedIntervalTreeIterator<'a, N, D, B>
+{
+    type Item = Entry<'a, N, D>;
+
+    fn next(&mut self) -> Option<Entry<'a, N, D>> {
+        loop {
+            let candidate = match self.nodes.pop() {
+                None => return None,
+                Some(node) => node,
+            };
+
+            // stop traversal if the query interval is beyond the current node and all children
+            if B::traverse_left_candidate(&self.interval.start, &candidate.max) {
+                if let Some(ref left) = candidate.left {
+                    self.nodes.push(left);
+                }
+
+                // don't traverse right if the query interval is completely before the current
+                // interval
+                if B::traverse_right_candidate(&self.interval.end, &candidate.interval.start) {
+                    if let Some(ref right) = candidate.right {
+                        self.nodes.push(right);
+                    }
+
+                    // overlap is only possible if both tests pass
+                    if B::intersects(&self.interval, &candidate.interval) {
+                        return Some(Entry {
+                            data: &candidate.value,
+                            interval: &candidate.interval,
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -171,6 +217,50 @@ impl<'a, N: Ord + Clone + 'a, D: 'a> Iterator for IntervalTreeIteratorMut<'a, N,
     }
 }
 
+pub struct BoundedIntervalTreeIteratorMut<'a, N: Ord + Clone, D, B: Bounds> {
+    nodes: Vec<&'a mut Node<N, D>>,
+    interval: Interval<N>,
+    _bounds: std::marker::PhantomData<B>,
+}
+
+impl<'a, N: Ord + Clone + 'a, D: 'a, B: Bounds> Iterator
+    for BoundedIntervalTreeIteratorMut<'a, N, D, B>
+{
+    type Item = EntryMut<'a, N, D>;
+
+    fn next(&mut self) -> Option<EntryMut<'a, N, D>> {
+        loop {
+            let candidate = match self.nodes.pop() {
+                None => return None,
+                Some(node) => node,
+            };
+
+            // stop traversal if the query interval is beyond the current node and all children
+            if B::traverse_left_candidate(&self.interval.start, &candidate.max) {
+                if let Some(ref mut left) = candidate.left {
+                    self.nodes.push(left);
+                }
+
+                // don't traverse right if the query interval is completely before the current
+                // interval
+                if B::traverse_right_candidate(&self.interval.end, &candidate.interval.start) {
+                    if let Some(ref mut right) = candidate.right {
+                        self.nodes.push(right);
+                    }
+
+                    // overlap is only possible if both tests pass
+                    if B::intersects(&self.interval, &candidate.interval) {
+                        return Some(EntryMut {
+                            data: &mut candidate.value,
+                            interval: &candidate.interval,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl<N: Clone + Ord, D> IntervalTree<N, D> {
     /// Creates a new empty `IntervalTree`
     pub fn new() -> Self {
@@ -203,6 +293,31 @@ impl<N: Clone + Ord, D> IntervalTree<N, D> {
     }
 
     /// Uses the provided `Interval` to find overlapping intervals in the tree and returns an
+    /// `BoundedIntervalTreeIterator` that allows for different bounds
+    /// (e.g. `Inclusive` or `Exclusive`) to be used
+    pub fn find_bounded<I: Into<Interval<N>>, B: Bounds>(
+        &self,
+        interval: I,
+    ) -> BoundedIntervalTreeIterator<'_, N, D, B> {
+        let interval = interval.into();
+        match self.root {
+            Some(ref n) => BoundedIntervalTreeIterator {
+                nodes: vec![n],
+                interval,
+                _bounds: std::marker::PhantomData,
+            },
+            None => {
+                let nodes = vec![];
+                BoundedIntervalTreeIterator {
+                    nodes,
+                    interval,
+                    _bounds: std::marker::PhantomData,
+                }
+            }
+        }
+    }
+
+    /// Uses the provided `Interval` to find overlapping intervals in the tree and returns an
     /// `IntervalTreeIteratorMut` that allows mutable access to the `data`
     pub fn find_mut<I: Into<Interval<N>>>(
         &mut self,
@@ -217,6 +332,28 @@ impl<N: Clone + Ord, D> IntervalTree<N, D> {
             None => {
                 let nodes = vec![];
                 IntervalTreeIteratorMut { nodes, interval }
+            }
+        }
+    }
+
+    pub fn find_mut_bounded<I: Into<Interval<N>>, B: Bounds>(
+        &mut self,
+        interval: I,
+    ) -> BoundedIntervalTreeIteratorMut<'_, N, D, B> {
+        let interval = interval.into();
+        match self.root {
+            Some(ref mut n) => BoundedIntervalTreeIteratorMut {
+                nodes: vec![n],
+                interval,
+                _bounds: std::marker::PhantomData,
+            },
+            None => {
+                let nodes = vec![];
+                BoundedIntervalTreeIteratorMut {
+                    nodes,
+                    interval,
+                    _bounds: std::marker::PhantomData,
+                }
             }
         }
     }
