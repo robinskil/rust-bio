@@ -65,6 +65,35 @@ impl<'a, N: Ord + Clone + 'a, D: 'a> Entry<'a, N, D> {
     }
 }
 
+pub struct FullTreeIterator<'a, N: Ord + Clone, D> {
+    nodes: Vec<&'a Node<N, D>>,
+}
+
+impl<'a, N: Ord + Clone + 'a, D: 'a> Iterator for FullTreeIterator<'a, N, D> {
+    type Item = Entry<'a, N, D>;
+
+    fn next(&mut self) -> Option<Entry<'a, N, D>> {
+        loop {
+            let candidate = match self.nodes.pop() {
+                None => return None,
+                Some(node) => node,
+            };
+
+            if let Some(ref left) = candidate.left {
+                self.nodes.push(left);
+            }
+            if let Some(ref right) = candidate.right {
+                self.nodes.push(right);
+            }
+
+            return Some(Entry {
+                data: &candidate.value,
+                interval: &candidate.interval,
+            });
+        }
+    }
+}
+
 pub struct BoundedIntervalTreeIterator<'a, N: Ord + Clone, D, B: Bounds> {
     nodes: Vec<&'a Node<N, D>>,
     interval: Interval<N>,
@@ -274,6 +303,13 @@ impl<N: Clone + Ord, D> IntervalTree<N, D> {
             Some(ref mut n) => n.insert(interval, data),
             None => self.root = Some(Node::new(interval, data)),
         };
+    }
+
+    pub fn iter(&self) -> FullTreeIterator<'_, N, D> {
+        match self.root {
+            Some(ref n) => FullTreeIterator { nodes: vec![n] },
+            None => FullTreeIterator { nodes: vec![] },
+        }
     }
 
     /// Uses the provided `Interval` to find overlapping intervals in the tree and returns an
@@ -769,5 +805,15 @@ mod tests {
             } else {
                 *e.data() == 0
             }));
+    }
+
+    #[test]
+    fn iter_full() {
+        let tree: IntervalTree<i64, usize> = vec![(10..100, 1), (10..20, 2), (1..8, 3)]
+            .into_iter()
+            .collect();
+        let vec = tree.iter().collect::<Vec<_>>();
+
+        assert_eq!(vec.len(), 3);
     }
 }
